@@ -26,6 +26,26 @@ type question struct{
 	Options []string
 }
 
+func playQuestion(q interface{}) string{
+	question := question{}
+	mapstructure.Decode(q, &question)
+	question_prompt := fmt.Sprintf("What is the capital of %s?", question.Country)
+	ans_p := promptui.Select{
+		Label: question_prompt,
+		Items: question.Options,
+		HideSelected:false,
+		Templates: &promptui.SelectTemplates{
+			Selected:fmt.Sprintf(`{{ "%s" }} {{ . | faint }}`, question_prompt),
+		},
+
+	}
+	_, ans, err := ans_p.Run()
+	if err != nil{
+		panic(err)
+	}
+	return ans
+}
+
 
 func (game *Game) initGame(socket_url string,  player string,  opponent string){
 	game.connectToSocket(socket_url, player, opponent)
@@ -38,9 +58,7 @@ func (game *Game) connectToSocket(url string, player string, opponent string) {
 	header.Add("Origin", "http://localhost:3434/")
 	header.Add("sender", player)
 	header.Add("opponent", opponent)
-
-
-
+	
 	conn, resp, err := Dialer.Dial(url, header)
 
 	if err == websocket.ErrBadHandshake {
@@ -61,31 +79,16 @@ func checkSocket(conn *websocket.Conn){
 			return
 		}
 		switch m.Type {
-		case "acknowledged":
-			fmt.Printf("%s \n",m.Content)
-		case "timeout":
-			fmt.Printf("%s \n",m.Content)
-		case "question":
-			q := question{}
-			mapstructure.Decode(m.Content, &q)
-			question_prompt := fmt.Sprintf("What is the capital of %s?", q.Country)
-			ans_p := promptui.Select{
-				Label: question_prompt,
-				Items: q.Options,
-				HideSelected:false,
-				Templates: &promptui.SelectTemplates{
-					Selected:fmt.Sprintf(`{{ "%s" }} {{ . | faint }}`, question_prompt),
-			},
-
-			}
-			_, ans, err := ans_p.Run()
-			if err != nil{
-				panic(err)
-			}
-			resp := message{"answer", ans}
-			conn.WriteJSON(resp)
-		default:
-			fmt.Println("Ooops!")
+			case "acknowledged":
+				fmt.Printf("%s \n",m.Content)
+			case "timeout":
+				fmt.Printf("%s \n",m.Content)
+			case "question":
+				ans := playQuestion(m.Content)
+				resp := message{"answer", ans}
+				conn.WriteJSON(resp)
+			default:
+				fmt.Println("Ooops!")
 		}
 
 
