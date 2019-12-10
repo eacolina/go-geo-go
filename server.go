@@ -32,6 +32,7 @@ type Hub struct {
 	GamesMux sync.Mutex
 	ConnectionsMux sync.Mutex
 	Upgrader websocket.Upgrader
+	AnswerSemaphore sync.WaitGroup
 }
 
 func (hub *Hub) InitHub(){
@@ -44,6 +45,7 @@ func (hub *Hub) InitHub(){
 	hub.Games = make(map[string] bool)
 	hub.ConnectionsMux = sync.Mutex{}
 	hub.GamesMux = sync.Mutex{}
+	hub.AnswerSemaphore = sync.WaitGroup{}
 }
 
 var port = *flag.String("ip", "3434", "help message for flagname")
@@ -65,43 +67,57 @@ func(hub *Hub) startGame(p1 string, p2 string){
 }
 
 func(hub *Hub) play(p1_conn, p2_conn *websocket.Conn){
-	for i:= 0; i < 1; i++{
+	for i:= 0; i < 3; i++{
 		question := question{"Ecuador", []string{"Quito", "Bogotá", "Lima", "Montevideo"}}
-		message := message{QUESTION, question}
-		err := p1_conn.WriteJSON(message)
+		m := message{QUESTION, question}
+		err := p1_conn.WriteJSON(m)
+		hub.AnswerSemaphore.Add(2)
+		if err != nil {
+			panic(err)
+		}
 		go hub.waitForAnswers(p1_conn, "Quito", 30*time.Second)
+		err = p2_conn.WriteJSON(m)
 		if err != nil {
 			panic(err)
 		}
-		err = p2_conn.WriteJSON(message)
 		go hub.waitForAnswers(p2_conn, "Quito", 30*time.Second)
-		if err != nil {
-			panic(err)
-		}
-
+		hub.AnswerSemaphore.Wait()
+		waitMessage := message{ACKNOWLEDGED, "Next question in 5 seconds"}
+		p1_conn.WriteJSON(waitMessage)
+		p2_conn.WriteJSON(waitMessage)
+		time.Sleep(5 * time.Second)
+		fmt.Println("both ans received")
 	}
 }
 
 func(hub *Hub) waitForAnswers(conn *websocket.Conn, rightAnswer string, ttl time.Duration){
 	pipe := make(chan message)
 	timer := time.NewTimer(ttl)
+	start := time.Now()
 	go waitForMessage(conn, pipe)
 	for {
 		select {
 		case ans := <-pipe:
+			elapsed := time.Now().Sub(start).Seconds()
 			m := message{}
 			if ans.Content.(string) == rightAnswer{
+				score := int((1 - elapsed/ttl.Seconds())* 100)
 				m.Type = ACKNOWLEDGED
-				m.Content = "You got it right! 🌎"
+				m.Content = fmt.Sprintf("You got it right! 🌎 Your score is %d points", score)
 			} else {
+				score := 0
 				m.Type = ACKNOWLEDGED
-				m.Content = "👎 Someone needs to buy an atlas"
+				m.Content = fmt.Sprintf("👎 Someone needs to buy an atlas. Your score is %d points", score)
 			}
 			timer.Stop()
 			conn.WriteJSON(m)
+			hub.AnswerSemaphore.Done()
+			return
 		case <-timer.C:
 			m := message{ TIMEOUT,"It's too late buddy! 😭"}
 			conn.WriteJSON(m)
+			hub.AnswerSemaphore.Done()
+			return
 		}
 
 	}
