@@ -68,13 +68,13 @@ func checkSocket(conn *websocket.Conn){
 		case "question":
 			q := question{}
 			mapstructure.Decode(m.Content, &q)
+			question_prompt := fmt.Sprintf("What is the capital of %s?", q.Country)
 			ans_p := promptui.Select{
-				Label: "",
+				Label: question_prompt,
 				Items: q.Options,
 				HideSelected:false,
 				Templates: &promptui.SelectTemplates{
-					Label:fmt.Sprintf("%s {{.}}: ", promptui.IconInitial),
-					Selected:fmt.Sprintf(`{{ "What is the capital of %s?" }} {{ . | faint }}`, q.Country),
+					Selected:fmt.Sprintf(`{{ "%s" }} {{ . | faint }}`, question_prompt),
 			},
 
 			}
