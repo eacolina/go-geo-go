@@ -9,12 +9,17 @@ import (
 	"sync"
 
 	"time"
+	"os"
+	"encoding/json"
+	"io/ioutil"
+	"math/rand"
 )
 
 
 var ACKNOWLEDGED = "acknowledged"
 var QUESTION = "question"
 var TIMEOUT = "timeout"
+var capitals []Capital
 
 type message struct {
 	Type string
@@ -44,6 +49,11 @@ type Game struct {
 	AnswerSemaphore sync.WaitGroup
 }
 
+type Capital struct {
+	Country string
+	City string
+}
+
 func (hub *Hub) InitHub(){
 	hub.Upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -58,9 +68,7 @@ func (hub *Hub) InitHub(){
 
 var port = *flag.String("ip", "3434", "help message for flagname")
 
-
 var connections = make(map [string]*websocket.Conn)
-
 
 
 func(hub *Hub) startGame(p1 string, p2 string){
@@ -77,8 +85,6 @@ func(hub *Hub) startGame(p1 string, p2 string){
 	p2_conn.WriteJSON(question)
 	go newGame.play(3)
 }
-
-
 
 func(g *Game) play(rounds int){
 	for i:= 0; i < rounds; i++{
@@ -190,12 +196,50 @@ func(hub *Hub) waitForOpponent(p1 string, p2 string){
 	}
 }
 
+func fetchCapitals(filePath string){
+	js, err := os.Open(filePath)
+	if err != nil{
+		panic(err)
+	}
+	byte,_ := ioutil.ReadAll(js)
+	capitals = make([]Capital,0)
+	json.Unmarshal(byte,&capitals)
+}
+
+func generateQuestion(n int) (question, string){
+	s1 := rand.NewSource(time.Now().UnixNano())
+	r1 := rand.New(s1)
+	q := question{}
+	capitalsSet := make([]Capital,n)
+	options := make([]string, n)
+	selected := make(map[int]bool)
+	for i := 0; i < n; i++{
+		index := r1.Intn(len(capitals))
+		for selected[index]{
+			index = r1.Intn(len(capitals))
+			fmt.Println(index)
+		}
+		selected[index] = true
+		capitalsSet[i] = capitals[index]
+		options[i] = capitals[index].City
+	}
+
+	answer := capitalsSet[ r1.Intn(len(capitalsSet)) ]
+	q.Country = answer.Country
+	q.Options = options
+	return q, answer.City
+
+}
+
+
+
 func main() {
 	flag.Parse()
 	fmt.Println("Starting server... 🚀")
 	hub := Hub{}
 	hub.InitHub()
-
+	fetchCapitals("countries.json")
+	fmt.Println(generateQuestion(4))
 	ws_handler := func(w http.ResponseWriter, r *http.Request) {
 		sender := r.Header.Get("sender")
 		opponent := r.Header.Get("opponent")
