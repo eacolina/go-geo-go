@@ -28,10 +28,19 @@ type question struct{
 
 type Hub struct {
 	Connections map[string] *websocket.Conn
-	Games map[string] bool
+	Games map[string] Game
 	GamesMux sync.Mutex
 	ConnectionsMux sync.Mutex
 	Upgrader websocket.Upgrader
+
+}
+
+type Game struct {
+	p1 string
+	p2 string
+	p1_conn *websocket.Conn
+	p2_conn *websocket.Conn
+	scores map[string] int
 	AnswerSemaphore sync.WaitGroup
 }
 
@@ -42,10 +51,9 @@ func (hub *Hub) InitHub(){
 	}
 	hub.Upgrader.CheckOrigin = func(r *http.Request) bool { return true }
 	hub.Connections = make(map[string] *websocket.Conn)
-	hub.Games = make(map[string] bool)
+	hub.Games = make(map[string] Game)
 	hub.ConnectionsMux = sync.Mutex{}
 	hub.GamesMux = sync.Mutex{}
-	hub.AnswerSemaphore = sync.WaitGroup{}
 }
 
 var port = *flag.String("ip", "3434", "help message for flagname")
@@ -60,37 +68,51 @@ func(hub *Hub) startGame(p1 string, p2 string){
 	p1_conn := hub.Connections[p1]
 	p2_conn := hub.Connections[p2]
 	hub.ConnectionsMux.Unlock()
+	newGame := Game{p1,p2,p1_conn,p2_conn, map[string]int{p1: 0, p2:0}, sync.WaitGroup{}}
+	hub.GamesMux.Lock()
+	hub.Games[p1+p2] = newGame
+	hub.GamesMux.Unlock()
 	question := message{ACKNOWLEDGED, "Let the games begin! 😈"}
 	p1_conn.WriteJSON(question)
 	p2_conn.WriteJSON(question)
-	go hub.play(p1_conn, p2_conn)
+	go newGame.play(3)
 }
 
-func(hub *Hub) play(p1_conn, p2_conn *websocket.Conn){
-	for i:= 0; i < 3; i++{
+
+
+func(g *Game) play(rounds int){
+	for i:= 0; i < rounds; i++{
 		question := question{"Ecuador", []string{"Quito", "Bogotá", "Lima", "Montevideo"}}
 		m := message{QUESTION, question}
-		err := p1_conn.WriteJSON(m)
-		hub.AnswerSemaphore.Add(2)
+
+		err := g.p1_conn.WriteJSON(m)
+		g.AnswerSemaphore.Add(2)
 		if err != nil {
 			panic(err)
 		}
-		go hub.waitForAnswers(p1_conn, "Quito", 30*time.Second)
-		err = p2_conn.WriteJSON(m)
+		go g.waitForAnswers(g.p1_conn, "Quito", 30*time.Second)
+
+		err = g.p2_conn.WriteJSON(m)
 		if err != nil {
 			panic(err)
 		}
-		go hub.waitForAnswers(p2_conn, "Quito", 30*time.Second)
-		hub.AnswerSemaphore.Wait()
-		waitMessage := message{ACKNOWLEDGED, "Next question in 5 seconds"}
-		p1_conn.WriteJSON(waitMessage)
-		p2_conn.WriteJSON(waitMessage)
-		time.Sleep(5 * time.Second)
+		go g.waitForAnswers(g.p2_conn, "Quito", 30*time.Second)
+		g.AnswerSemaphore.Wait()
 		fmt.Println("both ans received")
+		if i < rounds - 1{
+			waitMessage := message{ACKNOWLEDGED, "Next question in 5 seconds"}
+			g.p1_conn.WriteJSON(waitMessage)
+			g.p2_conn.WriteJSON(waitMessage)
+			time.Sleep(5 * time.Second)
+		}
 	}
+	fmt.Println("Game has ended!")
+	waitMessage := message{ACKNOWLEDGED, "Game over guys!"}
+	g.p1_conn.WriteJSON(waitMessage)
+	g.p2_conn.WriteJSON(waitMessage)
 }
 
-func(hub *Hub) waitForAnswers(conn *websocket.Conn, rightAnswer string, ttl time.Duration){
+func(g *Game) waitForAnswers(conn *websocket.Conn, rightAnswer string, ttl time.Duration){
 	pipe := make(chan message)
 	timer := time.NewTimer(ttl)
 	start := time.Now()
@@ -111,12 +133,12 @@ func(hub *Hub) waitForAnswers(conn *websocket.Conn, rightAnswer string, ttl time
 			}
 			timer.Stop()
 			conn.WriteJSON(m)
-			hub.AnswerSemaphore.Done()
+			g.AnswerSemaphore.Done()
 			return
 		case <-timer.C:
 			m := message{ TIMEOUT,"It's too late buddy! 😭"}
 			conn.WriteJSON(m)
-			hub.AnswerSemaphore.Done()
+			g.AnswerSemaphore.Done()
 			return
 		}
 
@@ -135,17 +157,19 @@ func waitForMessage(conn *websocket.Conn, pipe chan message){
 
 func(hub *Hub) waitForOpponent(p1 string, p2 string){
 	hub.GamesMux.Lock()
-	if hub.Games[p1+p2] || hub.Games[p2+p1]{
+	_, found1 := hub.Games[p1+p2]
+	_, found2 := hub.Games[p2+p1]
+	hub.GamesMux.Unlock()
+	if found1 || found2 {
 		fmt.Println("Found a game")
 		return
 	}
-	hub.GamesMux.Unlock()
+
 	for {
 		hub.ConnectionsMux.Lock()
-		res := hub.Connections[p2]
+		_, ok := hub.Connections[p2]
 		hub.ConnectionsMux.Unlock()
-		if res != nil {
-			hub.Games[p1+p2] = true
+		if ok {
 			go hub.startGame(p1, p2)
 			return
 		}
