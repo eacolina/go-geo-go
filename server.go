@@ -90,29 +90,43 @@ func(g *Game) play(rounds int){
 		if err != nil {
 			panic(err)
 		}
-		go g.waitForAnswers(g.p1_conn, "Quito", 30*time.Second)
+		go g.waitForAnswers(g.p1,g.p1_conn, "Quito", 30*time.Second)
 
 		err = g.p2_conn.WriteJSON(m)
 		if err != nil {
 			panic(err)
 		}
-		go g.waitForAnswers(g.p2_conn, "Quito", 30*time.Second)
+		go g.waitForAnswers(g.p2, g.p2_conn, "Quito", 30*time.Second)
 		g.AnswerSemaphore.Wait()
 		fmt.Println("both ans received")
-		if i < rounds - 1{
+		if i < rounds - 1 {
 			waitMessage := message{ACKNOWLEDGED, "Next question in 5 seconds"}
 			g.p1_conn.WriteJSON(waitMessage)
 			g.p2_conn.WriteJSON(waitMessage)
+		}
+		p1WaitMessage := message{ACKNOWLEDGED, fmt.Sprintf("%s: %d pts / %s: %d pts", g.p1, g.scores[g.p1], g.p2, g.scores[g.p2])}
+		p2WaitMessage := message{ACKNOWLEDGED, fmt.Sprintf("%s: %d pts / %s: %d pts", g.p2, g.scores[g.p2], g.p1, g.scores[g.p1])}
+		g.p1_conn.WriteJSON(p1WaitMessage)
+		g.p2_conn.WriteJSON(p2WaitMessage)
+		if i < rounds - 1 {
 			time.Sleep(5 * time.Second)
 		}
 	}
+	var endMessage string
+	if g.scores[g.p1] > g.scores[g.p2]{
+		endMessage = fmt.Sprintf("%s won!", g.p1)
+	} else if g.scores[g.p1] < g.scores[g.p2]{
+		endMessage = fmt.Sprintf("%s won!", g.p2)
+	} else {
+		endMessage = "It was a tie!"
+	}
 	fmt.Println("Game has ended!")
-	waitMessage := message{ACKNOWLEDGED, "Game over guys!"}
+	waitMessage := message{ACKNOWLEDGED, endMessage}
 	g.p1_conn.WriteJSON(waitMessage)
 	g.p2_conn.WriteJSON(waitMessage)
 }
 
-func(g *Game) waitForAnswers(conn *websocket.Conn, rightAnswer string, ttl time.Duration){
+func(g *Game) waitForAnswers(player string, conn *websocket.Conn, rightAnswer string, ttl time.Duration){
 	pipe := make(chan message)
 	timer := time.NewTimer(ttl)
 	start := time.Now()
@@ -124,12 +138,12 @@ func(g *Game) waitForAnswers(conn *websocket.Conn, rightAnswer string, ttl time.
 			m := message{}
 			if ans.Content.(string) == rightAnswer{
 				score := int((1 - elapsed/ttl.Seconds())* 100)
+				g.scores[player] += score
 				m.Type = ACKNOWLEDGED
-				m.Content = fmt.Sprintf("You got it right! 🌎 Your score is %d points", score)
+				m.Content = fmt.Sprintf("🌎 You got it right! +%d pts", score)
 			} else {
-				score := 0
 				m.Type = ACKNOWLEDGED
-				m.Content = fmt.Sprintf("👎 Someone needs to buy an atlas. Your score is %d points", score)
+				m.Content = fmt.Sprintf("👎 Someone needs to buy an atlas. +0 pts")
 			}
 			timer.Stop()
 			conn.WriteJSON(m)
