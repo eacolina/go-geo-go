@@ -3,11 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/mitchellh/mapstructure"
 	"net/http"
 
 	"sync"
 
 	"github.com/gorilla/websocket"
+	"github.com/google/uuid"
 
 	"encoding/json"
 	"io/ioutil"
@@ -19,6 +21,7 @@ import (
 var ACKNOWLEDGED = "acknowledged"
 var QUESTION = "question"
 var TIMEOUT = "timeout"
+var ANSWER = "answer"
 var capitals []Capital
 
 type message struct {
@@ -26,7 +29,13 @@ type message struct {
 	Content interface{}
 }
 
+type answer struct {
+	Id string
+	Capital string
+}
+
 type question struct {
+	Id 		string
 	Country string
 	Options []string
 }
@@ -43,6 +52,24 @@ type Player struct{
 	name string
 	conn *websocket.Conn
 	connMux sync.Mutex
+	readChan chan message
+	stopReadChan chan bool
+}
+
+func(p *Player) readJSON(){
+	for {
+		select {
+		case <-p.stopReadChan:
+			return
+		default:
+			v := message{}
+			err := p.conn.ReadJSON(&v)
+			if err != nil {
+				panic(err)
+			}
+			p.readChan <- v
+		}
+	}
 }
 
 func(p *Player) sendJSON(v interface{}){
@@ -83,9 +110,13 @@ var port = *flag.String("ip", "3434", "help message for flagname")
 var connections = make(map[string]*websocket.Conn)
 
 func (hub *Hub) startGame(game *Game) {
-	question := message{ACKNOWLEDGED, "Let the games begin! 😈"}
-	game.p1.sendJSON(question)
-	game.p2.sendJSON(question)
+	initMessage := message{ACKNOWLEDGED, "Let the games begin! 😈"}
+	game.p1.sendJSON(initMessage)
+	game.p2.sendJSON(initMessage)
+
+	go game.p1.readJSON()
+	go game.p2.readJSON()
+
 	go game.play(10)
 }
 
@@ -96,9 +127,9 @@ func (g *Game) play(rounds int) {
 
 		g.p1.sendJSON(m)
 		g.AnswerSemaphore.Add(2)
-		go g.waitForAnswers(g.p1, ans, 10*time.Second)
+		go g.waitForAnswers(g.p1, q, ans, 10*time.Second)
 		g.p2.sendJSON(m)
-		go g.waitForAnswers(g.p2, ans, 10*time.Second)
+		go g.waitForAnswers(g.p2, q, ans, 10*time.Second)
 		g.AnswerSemaphore.Wait()
 		fmt.Println("both ans received")
 		if i < rounds-1 {
@@ -128,24 +159,29 @@ func (g *Game) play(rounds int) {
 	g.p2.sendJSON(waitMessage)
 }
 
-func (g *Game) waitForAnswers(player Player, rightAnswer string, ttl time.Duration) {
-	pipe := make(chan message)
+func (g *Game) waitForAnswers(player Player, question question, rightAnswer string, ttl time.Duration) {
 	timer := time.NewTimer(ttl)
 	start := time.Now()
-	go waitForMessage(player.conn, pipe)
 	for {
 		select {
-		case ans := <-pipe:
+		case msg := <-player.readChan:
+			if msg.Type != ANSWER{
+				fmt.Print("You fucked up")
+			}
+			answer := answer{}
+			mapstructure.Decode(msg.Content,&answer)
+			if answer.Id != question.Id{
+				continue
+			}
 			elapsed := time.Now().Sub(start).Seconds()
 			m := message{}
-			if ans.Content.(string) == rightAnswer {
+			m.Type = ACKNOWLEDGED
+			if answer.Capital == rightAnswer {
 				score := int((1 - elapsed/ttl.Seconds()) * 100)
 				g.scores[player.name] += score
-				m.Type = ACKNOWLEDGED
 				m.Content = fmt.Sprintf("🌎 You got it right! +%d pts", score)
 			} else {
-				m.Type = ACKNOWLEDGED
-				m.Content = fmt.Sprintf("👎 Someone needs to buy an atlas. +0 pts. Right answer was %s", rightAnswer)
+				m.Content = fmt.Sprintf("👎 Someone needs to buy an atlas. +0 pts. Right answer was %s ans you sent %s", rightAnswer, answer.Capital)
 			}
 			timer.Stop()
 			player.sendJSON(m)
@@ -162,14 +198,7 @@ func (g *Game) waitForAnswers(player Player, rightAnswer string, ttl time.Durati
 
 }
 
-func waitForMessage(conn *websocket.Conn, pipe chan message) {
-	m := message{}
-	err := conn.ReadJSON(&m)
-	if err != nil {
-		panic(err)
-	}
-	pipe <- m
-}
+
 
 func (hub *Hub) waitForOpponent(p1 string, p2 string) {
 	for {
@@ -184,8 +213,8 @@ func (hub *Hub) waitForOpponent(p1 string, p2 string) {
 		_, ok := hub.Connections[p2]
 		hub.ConnectionsMux.Unlock()
 		if ok {
-			player1 := Player{p1, hub.Connections[p1], sync.Mutex{}}
-			player2 := Player{p2, hub.Connections[p2], sync.Mutex{}}
+			player1 := Player{p1, hub.Connections[p1], sync.Mutex{}, make(chan message, 2), make(chan bool)}
+			player2 := Player{p2, hub.Connections[p2], sync.Mutex{}, make(chan message, 2), make(chan bool)}
 			newGame := Game{player1, player2,map[string]int{p1: 0, p2: 0}, sync.WaitGroup{}}
 			hub.Games[p1+p2] = newGame
 			go hub.startGame(&newGame)
@@ -226,6 +255,7 @@ func generateQuestion(n int) (question, string) {
 	}
 
 	answer := capitalsSet[r1.Intn(len(capitalsSet))]
+	q.Id = uuid.New().String()
 	q.Country = answer.Country
 	q.Options = options
 	return q, answer.City

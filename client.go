@@ -3,51 +3,58 @@ package main
 import (
 	"fmt"
 	"net/http"
+
 	"github.com/gorilla/websocket"
 	"github.com/manifoldco/promptui"
 	"github.com/mitchellh/mapstructure"
 )
 
-
 var to_user string
 var from_user string
 
-type Game struct{
+type Game struct {
 	Conn *websocket.Conn
 }
 
 type message struct {
-	Type string
+	Type    string
 	Content interface{}
 }
 
-type question struct{
+type question struct {
+	Id string
 	Country string
 	Options []string
 }
 
-func playQuestion(q interface{}) string{
+type answer struct {
+	Id string
+	Capital string
+}
+
+func playQuestion(q interface{}) answer {
 	question := question{}
 	mapstructure.Decode(q, &question)
 	question_prompt := fmt.Sprintf("What is the capital of %s?", question.Country)
 	ans_p := promptui.Select{
-		Label: question_prompt,
-		Items: question.Options,
-		HideSelected:false,
+		Label:        question_prompt,
+		Items:        question.Options,
+		HideSelected: false,
 		Templates: &promptui.SelectTemplates{
-			Selected:fmt.Sprintf(`{{ "%s" }} {{ . | faint }}`, question_prompt),
+			Selected: fmt.Sprintf(`{{ "%s" }} {{ . | faint }}`, question_prompt),
 		},
-
 	}
 	_, ans, err := ans_p.Run()
-	if err != nil{
+	if err != nil {
 		panic(err)
 	}
-	return ans
+	return answer{
+		Id:      question.Id,
+		Capital: ans,
+	}
 }
 
-
-func (game *Game) initGame(socket_url string,  player string,  opponent string){
+func (game *Game) initGame(socket_url string, player string, opponent string) {
 	game.connectToSocket(socket_url, player, opponent)
 }
 
@@ -55,11 +62,14 @@ func (game *Game) connectToSocket(url string, player string, opponent string) {
 	header := make(http.Header)
 	var Dialer websocket.Dialer
 
-	header.Add("Origin", "http://localhost:3434/")
+	header.Add("Origin", " http://localhost:3434")
 	header.Add("sender", player)
 	header.Add("opponent", opponent)
-	
+
 	conn, resp, err := Dialer.Dial(url, header)
+	if err != nil {
+		fmt.Println(err)
+	}
 
 	if err == websocket.ErrBadHandshake {
 		fmt.Printf("handshake failed with status %d\n", resp.StatusCode)
@@ -68,9 +78,7 @@ func (game *Game) connectToSocket(url string, player string, opponent string) {
 	game.Conn = conn
 }
 
-
-
-func checkSocket(conn *websocket.Conn){
+func checkSocket(conn *websocket.Conn) {
 	for {
 		m := message{}
 		err := conn.ReadJSON(&m)
@@ -79,31 +87,28 @@ func checkSocket(conn *websocket.Conn){
 			return
 		}
 		switch m.Type {
-			case "acknowledged":
-				fmt.Printf("%s \n",m.Content)
-			case "timeout":
-				fmt.Printf("%s \n",m.Content)
-			case "question":
-				ans := playQuestion(m.Content)
-				resp := message{"answer", ans}
-				conn.WriteJSON(resp)
-			default:
-				fmt.Println("Ooops!")
+		case "acknowledged":
+			fmt.Printf("%s \n", m.Content)
+		case "timeout":
+			fmt.Printf("%s \n", m.Content)
+		case "question":
+			ans := playQuestion(m.Content)
+
+			resp := message{"answer", ans}
+			conn.WriteJSON(resp)
+		default:
+			fmt.Println("Ooops!")
 		}
-
-
 
 	}
 }
-
-
 
 func main() {
 	username_promt := promptui.Prompt{
 		Label: "Input your username",
 	}
 	opponent_prompt := promptui.Prompt{
-		Label:"Enter your opponent's username",
+		Label: "Enter your opponent's username",
 	}
 
 	player, err := username_promt.Run()
@@ -115,15 +120,13 @@ func main() {
 	}
 
 	game := Game{}
-	fmt.Println("Statrting game...🕹")
+	fmt.Println("Starting game...🕹")
 	game.initGame("ws://localhost:3434/ws", player, opponent)
 	checkSocket(game.Conn)
-
 
 	if err != nil {
 		fmt.Printf("Prompt failed %v\n", err)
 		return
 	}
-
 
 }
