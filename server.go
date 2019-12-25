@@ -24,6 +24,8 @@ var TIMEOUT = "timeout"
 var ANSWER = "answer"
 var capitals []Capital
 
+var port = *flag.String("ip", "3434", "help message for flagname")
+
 type message struct {
 	Type    string
 	Content interface{}
@@ -46,6 +48,7 @@ type Hub struct {
 	GamesMux       sync.Mutex
 	ConnectionsMux sync.Mutex
 	Upgrader       websocket.Upgrader
+	Handler http.HandlerFunc
 }
 
 type Player struct{
@@ -94,6 +97,26 @@ type Capital struct {
 }
 
 func (hub *Hub) InitHub() {
+	hub.Handler = func(w http.ResponseWriter, r *http.Request) {
+		sender := r.Header.Get("sender")
+		opponent := r.Header.Get("opponent")
+
+		conn, err := hub.Upgrader.Upgrade(w, r, nil)
+		conn.SetCloseHandler(func(code int, text string) error {
+			fmt.Println("Connection Closed")
+			return nil
+		})
+
+		hub.ConnectionsMux.Lock()
+		hub.Connections[sender] = conn
+		hub.ConnectionsMux.Unlock()
+
+		go hub.waitForOpponent(sender, opponent)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("%s started connection\n", sender)
+	}
 	hub.Upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
@@ -105,10 +128,6 @@ func (hub *Hub) InitHub() {
 	hub.GamesMux = sync.Mutex{}
 }
 
-var port = *flag.String("ip", "3434", "help message for flagname")
-
-var connections = make(map[string]*websocket.Conn)
-
 func (hub *Hub) startGame(game *Game) {
 	initMessage := message{ACKNOWLEDGED, "Let the games begin! 😈"}
 	game.p1.sendJSON(initMessage)
@@ -118,6 +137,32 @@ func (hub *Hub) startGame(game *Game) {
 	go game.p2.readJSON()
 
 	go game.play(10)
+}
+
+func (hub *Hub) waitForOpponent(p1 string, p2 string) {
+	for {
+		hub.GamesMux.Lock()
+		_, found1 := hub.Games[p1+p2]
+		_,found2 := hub.Games[p2+p1]
+		if found1 || found2 {
+			fmt.Println("Found a game")
+			return
+		}
+		hub.ConnectionsMux.Lock()
+		_, ok := hub.Connections[p2]
+		hub.ConnectionsMux.Unlock()
+		if ok {
+			player1 := Player{p1, hub.Connections[p1], sync.Mutex{}, make(chan message, 2), make(chan bool)}
+			player2 := Player{p2, hub.Connections[p2], sync.Mutex{}, make(chan message, 2), make(chan bool)}
+			newGame := Game{player1, player2,map[string]int{p1: 0, p2: 0}, sync.WaitGroup{}}
+			hub.Games[p1+p2] = newGame
+			go hub.startGame(&newGame)
+		}
+		hub.GamesMux.Unlock()
+		if ok {
+			return
+		}
+	}
 }
 
 func (g *Game) play(rounds int) {
@@ -145,11 +190,15 @@ func (g *Game) play(rounds int) {
 			time.Sleep(5 * time.Second)
 		}
 	}
+	g.finishGame()
+}
+
+func (g *Game) finishGame() {
 	var endMessage string
 	if g.scores[g.p1.name] > g.scores[g.p2.name] {
-		endMessage = fmt.Sprintf("%s won!", g.p1)
+		endMessage = fmt.Sprintf("%s won!", g.p1.name)
 	} else if g.scores[g.p1.name] < g.scores[g.p2.name] {
-		endMessage = fmt.Sprintf("%s won!", g.p2)
+		endMessage = fmt.Sprintf("%s won!", g.p2.name)
 	} else {
 		endMessage = "It was a tie!"
 	}
@@ -171,6 +220,7 @@ func (g *Game) waitForAnswers(player Player, question question, rightAnswer stri
 			answer := answer{}
 			mapstructure.Decode(msg.Content,&answer)
 			if answer.Id != question.Id{
+				fmt.Println("Just skipped an answer")
 				continue
 			}
 			elapsed := time.Now().Sub(start).Seconds()
@@ -196,34 +246,6 @@ func (g *Game) waitForAnswers(player Player, question question, rightAnswer stri
 
 	}
 
-}
-
-
-
-func (hub *Hub) waitForOpponent(p1 string, p2 string) {
-	for {
-		hub.GamesMux.Lock()
-		_, found1 := hub.Games[p1+p2]
-		_,found2 := hub.Games[p2+p1]
-		if found1 || found2 {
-			fmt.Println("Found a game")
-			return
-		}
-		hub.ConnectionsMux.Lock()
-		_, ok := hub.Connections[p2]
-		hub.ConnectionsMux.Unlock()
-		if ok {
-			player1 := Player{p1, hub.Connections[p1], sync.Mutex{}, make(chan message, 2), make(chan bool)}
-			player2 := Player{p2, hub.Connections[p2], sync.Mutex{}, make(chan message, 2), make(chan bool)}
-			newGame := Game{player1, player2,map[string]int{p1: 0, p2: 0}, sync.WaitGroup{}}
-			hub.Games[p1+p2] = newGame
-			go hub.startGame(&newGame)
-		}
-		hub.GamesMux.Unlock()
-		if ok {
-			return
-		}
-	}
 }
 
 func fetchCapitals(filePath string) {
@@ -268,27 +290,7 @@ func main() {
 	hub := Hub{}
 	hub.InitHub()
 	fetchCapitals("countries.json")
-	ws_handler := func(w http.ResponseWriter, r *http.Request) {
-		sender := r.Header.Get("sender")
-		opponent := r.Header.Get("opponent")
-
-		conn, err := hub.Upgrader.Upgrade(w, r, nil)
-		conn.SetCloseHandler(func(code int, text string) error {
-			fmt.Println("Connection Closed")
-			return nil
-		})
-
-		hub.ConnectionsMux.Lock()
-		hub.Connections[sender] = conn
-		hub.ConnectionsMux.Unlock()
-
-		go hub.waitForOpponent(sender, opponent)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Printf("%s started connection\n", sender)
-	}
-	http.HandleFunc("/ws", ws_handler)
+	http.HandleFunc("/ws", hub.Handler)
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
 		panic(err)
