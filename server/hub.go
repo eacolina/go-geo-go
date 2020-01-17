@@ -56,7 +56,7 @@ func (hub *Hub) startGame(game *Game) {
 	go game.p1.readJSON()
 	go game.p2.readJSON()
 
-	go game.play(10)
+	go game.play(5)
 }
 
 func (hub *Hub) waitForOpponent(p1 string, p2 string) {
@@ -72,9 +72,9 @@ func (hub *Hub) waitForOpponent(p1 string, p2 string) {
 		_, ok := hub.Connections[p2]
 		hub.ConnectionsMux.Unlock()
 		if ok {
-			player1 := Player{p1, hub.Connections[p1], sync.Mutex{}, make(chan message, 2), make(chan bool)}
-			player2 := Player{p2, hub.Connections[p2], sync.Mutex{}, make(chan message, 2), make(chan bool)}
-			newGame := Game{player1, player2,map[string]int{p1: 0, p2: 0}, sync.WaitGroup{}}
+			player1 := Player{p1, hub.Connections[p1], sync.Mutex{}, make(chan websocketMessage, 2), make(chan bool,2)}
+			player2 := Player{p2, hub.Connections[p2], sync.Mutex{}, make(chan websocketMessage, 2), make(chan bool,2)}
+			newGame := Game{player1, player2,map[string]int{p1: 0, p2: 0}, sync.WaitGroup{}, make(chan bool, 2)}
 			hub.Games[p1+p2] = newGame
 			go hub.startGame(&newGame)
 		}

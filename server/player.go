@@ -14,7 +14,7 @@ type Player struct{
 	stopReadChan chan bool
 }
 
-func(p *Player) readJSON(errChan chan bool){
+func(p *Player) readJSON(){
 	for {
 		select {
 		case <-p.stopReadChan:
@@ -22,24 +22,18 @@ func(p *Player) readJSON(errChan chan bool){
 		default:
 			v := message{}
 			err := p.conn.ReadJSON(&v)
-			if websocket.IsCloseError(err, websocket.CloseAbnormalClosure){
-				errChan <- true
-				p.readChan <- websocketMessage{msg:nil, err:err}
-				return
-			}
 			if err != nil {
+				p.readChan <- websocketMessage{msg:message{}, err:err}
 				fmt.Println("There was a WebSocket error:", err)
+				return
 			}
 			p.readChan <- websocketMessage{msg:v, err:nil}
 		}
 	}
 }
 
-func(p *Player) sendJSON(v interface{}){
+func(p *Player) sendJSON(v interface{}) error{
 	defer p.connMux.Unlock()
 	p.connMux.Lock()
-	err := p.conn.WriteJSON(v)
-	if err != nil{
-		panic(err)
-	}
+	return p.conn.WriteJSON(v)
 }
