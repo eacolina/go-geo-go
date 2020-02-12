@@ -58,7 +58,7 @@ type country struct {
 }
 
 type gameOver struct{
-	Leaderboard []string `json:"leaderboard"`
+	Leaderboard map[string]int `json:"leaderboard"`
 }
 
 
@@ -105,6 +105,7 @@ func main() {
 	hub.InitHub()
 	fetchCapitals(CapitalsFile)
 	http.HandleFunc("/ws", hub.Handler)
+	http.HandleFunc("/game", hub.CreateGame)
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
 		panic(err)

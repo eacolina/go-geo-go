@@ -7,17 +7,27 @@ import (
 )
 
 type Player struct{
-	name string
-	conn *websocket.Conn
-	connMux sync.Mutex
-	readChan chan websocketMessage
+	Id           string
+	conn         *websocket.Conn
+	connMux      sync.Mutex
+	readChan     chan websocketMessage
 	stopReadChan chan bool
 }
 
+func(p *Player) New(playerID string, conn *websocket.Conn){
+	p.Id = playerID
+	p.conn = conn
+	p.connMux = sync.Mutex{}
+	p.readChan = make(chan websocketMessage, 4)
+	p.stopReadChan = make(chan bool, 2)
+}
+
 func(p *Player) readJSON(){
+	fmt.Println("starting read for ", p.Id)
 	for {
 		select {
-		case <-p.stopReadChan:
+		case <- p.stopReadChan:
+			fmt.Println("stopped read for ", p.Id)
 			return
 		default:
 			v := message{}
@@ -36,4 +46,11 @@ func(p *Player) sendJSON(v interface{}) error{
 	defer p.connMux.Unlock()
 	p.connMux.Lock()
 	return p.conn.WriteJSON(v)
+}
+
+func(p *Player) dropConnection(){
+	err := p.conn.Close()
+	if err != nil {
+		fmt.Println("Error when closing connection:", err)
+	}
 }

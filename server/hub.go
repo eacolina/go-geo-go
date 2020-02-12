@@ -1,86 +1,138 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"io/ioutil"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 )
 
 type Hub struct {
 	Connections    map[string]*websocket.Conn
-	Games          map[string]Game
+	Games          sync.Map
+	PlayerGameMap  sync.Map
 	GamesMux       sync.Mutex
 	ConnectionsMux sync.Mutex
 	Upgrader       websocket.Upgrader
-	Handler http.HandlerFunc
+	Handler 	   http.HandlerFunc
+	CreateGame 	   http.HandlerFunc
+	UnregisterGame chan int
+}
+
+type CreateGameRequest struct {
+	Players []string `json:"players"`
+}
+
+type CreateGameResponse struct {
+	GameID int `json:"gameID"`
 }
 
 func (hub *Hub) InitHub() {
 	hub.Handler = func(w http.ResponseWriter, r *http.Request) {
-		sender := r.Header.Get("sender")
-		opponent := r.Header.Get("opponent")
+		playerID := r.Header.Get("userID")
+		gameID, _ := strconv.Atoi(r.Header.Get("gameID"))
+		retrievedGameID, ok := hub.PlayerGameMap.Load(playerID)
 
-		conn, err := hub.Upgrader.Upgrade(w, r, nil)
-		conn.SetCloseHandler(func(code int, text string) error {
-			fmt.Println("Connection Closed")
-			return nil
-		})
-
-		hub.ConnectionsMux.Lock()
-		hub.Connections[sender] = conn
-		hub.ConnectionsMux.Unlock()
-
-		go hub.waitForOpponent(sender, opponent)
+		if ok && retrievedGameID == gameID {
+			wsConnection, err := hub.Upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				panic(err)
+			}
+			wsConnection.SetCloseHandler(func(code int, text string) error {
+				fmt.Println("Connection Closed")
+				return nil
+			})
+			hub.ConnectionsMux.Lock()
+			hub.Connections[playerID] = wsConnection
+			player := Player{}
+			player.New(playerID, hub.Connections[playerID])
+			hub.ConnectionsMux.Unlock()
+			foundGame, _ := hub.Games.Load(gameID)
+			game := foundGame.(*Game)
+			game.addPlayer(player)
+			game.JoinSemaphore.Done()
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}
+	hub.CreateGame = func(w http.ResponseWriter, r *http.Request){
+		var gameRequest CreateGameRequest
+		var game *Game
+		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("%s started connection\n", sender)
+		json.Unmarshal(body, &gameRequest)
+
+
+		s1 := rand.NewSource(time.Now().UnixNano())
+		r1 := rand.New(s1)
+		gameID := r1.Intn(10000)
+		game = new(Game)
+		game.New(len(gameRequest.Players), gameID, hub.UnregisterGame)
+		hub.Games.Store(gameID, game)
+
+		for _, playerID := range gameRequest.Players{
+			hub.PlayerGameMap.Store(playerID, gameID)
+		}
+
+		respBody := CreateGameResponse{GameID: gameID}
+		respData, err := json.Marshal(respBody)
+		if err != nil {
+			panic(err)
+		}
+		go hub.startGame(game)
+		w.WriteHeader(http.StatusCreated)
+		w.Write(respData)
 	}
+
 	hub.Upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 	}
 	hub.Upgrader.CheckOrigin = func(r *http.Request) bool { return true }
 	hub.Connections = make(map[string]*websocket.Conn)
-	hub.Games = make(map[string]Game)
+	hub.Games = sync.Map{}
 	hub.ConnectionsMux = sync.Mutex{}
 	hub.GamesMux = sync.Mutex{}
+	hub.UnregisterGame = make(chan int, 20)
+	go hub.start()
+}
+
+func (hub *Hub) start(){
+	for {
+		select{
+			case id := <-hub.UnregisterGame:
+				fmt.Println("asked to cancel game: ", id)
+				g, _ := hub.Games.Load(id)
+				hub.finishGame(g.(*Game))
+		}
+	}
 }
 
 func (hub *Hub) startGame(game *Game) {
 	initMessage := message{ACKNOWLEDGED, "Let the games begin! 😈"}
-	game.p1.sendJSON(initMessage)
-	game.p2.sendJSON(initMessage)
-
-	go game.p1.readJSON()
-	go game.p2.readJSON()
-
-	go game.play(5)
+	game.JoinSemaphore.Wait()
+	fmt.Println("Starting Game")
+	game.startReadingFromAllPlayers()
+	game.sendMessageToAllPlayers(initMessage)
+	go game.play(20)
 }
 
-func (hub *Hub) waitForOpponent(p1 string, p2 string) {
-	for {
-		hub.GamesMux.Lock()
-		_, found1 := hub.Games[p1+p2]
-		_,found2 := hub.Games[p2+p1]
-		if found1 || found2 {
-			fmt.Println("Found a game")
-			return
-		}
+func(hub *Hub) finishGame(game *Game){
+	for _, player := range game.Players{
+		player.dropConnection()
+		hub.PlayerGameMap.Delete(player.Id)
 		hub.ConnectionsMux.Lock()
-		_, ok := hub.Connections[p2]
+		delete(hub.Connections, player.Id)
 		hub.ConnectionsMux.Unlock()
-		if ok {
-			player1 := Player{p1, hub.Connections[p1], sync.Mutex{}, make(chan websocketMessage, 2), make(chan bool,2)}
-			player2 := Player{p2, hub.Connections[p2], sync.Mutex{}, make(chan websocketMessage, 2), make(chan bool,2)}
-			newGame := Game{player1, player2,map[string]int{p1: 0, p2: 0}, sync.WaitGroup{}, make(chan bool, 2)}
-			hub.Games[p1+p2] = newGame
-			go hub.startGame(&newGame)
-		}
-		hub.GamesMux.Unlock()
-		if ok {
-			return
-		}
 	}
+	hub.Games.Delete(game.Id)
+	fmt.Printf("Cleared game %d succesfully\n", game.Id)
 }
+
