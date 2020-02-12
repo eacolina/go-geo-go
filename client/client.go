@@ -41,6 +41,11 @@ type gameOver struct{
 	Leaderboard []string `json:"leaderboard"`
 }
 
+type startGame struct {
+	UserID string `json:"userID"`
+	GameID string `json:"gameID"`
+}
+
 
 func playQuestion(q interface{}) answer {
 	question := question{}
@@ -73,8 +78,8 @@ func (game *Game) connectToSocket(url string, player string, opponent string) {
 	var Dialer websocket.Dialer
 
 	header.Add("Origin", " http://localhost:3434")
-	header.Add("sender", player)
-	header.Add("opponent", opponent)
+	header.Add("userID", player)
+	header.Add("gameID", opponent)
 
 	conn, resp, err := Dialer.Dial(url, header)
 	if err != nil {
@@ -108,19 +113,24 @@ func checkSocket(conn *websocket.Conn) {
 		case "scoreUpdate":
 			scores := make(map[string]int)
 			mapstructure.Decode(m.Content, &scores)
-			fmt.Printf("%s: %d pts, %s: %d pts\n", player_username, scores[player_username], opponent_username, scores[opponent_username])
+			//fmt.Print("Scores :")
+			//fmt.Println(scores)
 		case "status":
 			status := status{}
 			mapstructure.Decode(m.Content, &status)
-			fmt.Print(status.Message)
+			fmt.Println(status.Message)
 		case "gameOver":
-			g := gameOver{}
+			g := map[string]int{}
 			mapstructure.Decode(m.Content, &g)
-			fmt.Print("Game over scores are:")
-			if len(g.Leaderboard) == 0 {
+			fmt.Println("Game over scores are:")
+			if len(g) == 0 {
 				fmt.Println("It was a tie")
 			} else {
-				fmt.Println(g.Leaderboard)
+				term := "🏆"
+				for k, v := range g{
+					fmt.Printf("%s %s: %d\n",term, k, v)
+					term = "💩"
+				}
 			}
 		default:
 			fmt.Println("Ooops!")
@@ -129,29 +139,31 @@ func checkSocket(conn *websocket.Conn) {
 	}
 }
 
+
 func main() {
 
 	username_promt := promptui.Prompt{
 		Label: "Input your username",
 	}
-	opponent_prompt := promptui.Prompt{
-		Label: "Enter your opponent's username",
+	gameID_prompt := promptui.Prompt{
+		Label: "Enter ID of game room",
 	}
 
 	player, err := username_promt.Run()
-	opponent, err := opponent_prompt.Run()
+	gameID, err := gameID_prompt.Run()
+
 
 	player_username = player
-	opponent_username = opponent
+	opponent_username = "John"
 
-	if player == "" || opponent == "" {
+	if player == "" || gameID == "" {
 		fmt.Println("Please input valid user names")
 		return
 	}
 
 	game := Game{}
 	fmt.Println("Starting game...🕹")
-	game.initGame("ws://localhost:3434/ws", player, opponent)
+	game.initGame("ws://ee60a3ab.ngrok.io/ws", player, gameID)
 	checkSocket(game.Conn)
 
 	if err != nil {
