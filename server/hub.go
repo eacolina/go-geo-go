@@ -26,6 +26,7 @@ type Hub struct {
 
 type CreateGameRequest struct {
 	Players []string `json:"players"`
+	Rounds	int      `json:rounds`
 }
 
 type CreateGameResponse struct {
@@ -69,18 +70,18 @@ func (hub *Hub) InitHub() {
 		}
 		json.Unmarshal(body, &gameRequest)
 
-
 		s1 := rand.NewSource(time.Now().UnixNano())
 		r1 := rand.New(s1)
 		gameID := r1.Intn(10000)
+
 		game = new(Game)
-		game.New(len(gameRequest.Players), gameID, hub.UnregisterGame)
+		game.New(len(gameRequest.Players), gameRequest.Rounds, gameID, hub.UnregisterGame)
 		hub.Games.Store(gameID, game)
 
 		for _, playerID := range gameRequest.Players{
 			hub.PlayerGameMap.Store(playerID, gameID)
 		}
-
+		fmt.Printf("Created game %d with players:%v\n", gameID, gameRequest.Players)
 		respBody := CreateGameResponse{GameID: gameID}
 		respData, err := json.Marshal(respBody)
 		if err != nil {
@@ -108,7 +109,7 @@ func (hub *Hub) start(){
 	for {
 		select{
 			case id := <-hub.UnregisterGame:
-				fmt.Println("asked to cancel game: ", id)
+				//fmt.Println("asked to cancel game: ", id)
 				g, _ := hub.Games.Load(id)
 				hub.finishGame(g.(*Game))
 		}
@@ -121,7 +122,7 @@ func (hub *Hub) startGame(game *Game) {
 	fmt.Println("Starting Game")
 	game.startReadingFromAllPlayers()
 	game.sendMessageToAllPlayers(initMessage)
-	go game.play(20)
+	go game.play()
 }
 
 func(hub *Hub) finishGame(game *Game){

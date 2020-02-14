@@ -15,6 +15,7 @@ type Game struct {
 	Id              int
 	Players			[]Player
 	NumberOfPlayers int
+	NumberOfRounds  int
 	OnlinePlayers   int
 	scores          map[string]int
 	AnswerSemaphore sync.WaitGroup
@@ -23,10 +24,11 @@ type Game struct {
 	UnregisterGame  chan int
 }
 
-func (g *Game) New(numOfPlayers int, gameID int, unregisterGame chan int){
+func (g *Game) New(numOfPlayers int, numOfRounds int, gameID int, unregisterGame chan int){
 	g.Id = gameID
 	g.Players = make([] Player, numOfPlayers)
 	g.NumberOfPlayers = numOfPlayers
+	g.NumberOfRounds = numOfRounds
 	g.OnlinePlayers = 0
 	g.scores = make(map [string]int)
 	g.AnswerSemaphore = sync.WaitGroup{}
@@ -46,12 +48,11 @@ func (g *Game) addPlayer(player Player){
 	}
 }
 
-func (g *Game) play(rounds int) {
+func (g *Game) play() {
 	defer g.finishGame()
-	for i := 0; i < rounds; i++ {
+	for i := 0; i < g.NumberOfRounds; i++ {
 		select {
 		case <-g.StopGame:
-			fmt.Println("Game canceled")
 			return
 		default:
 			q, ans := generateQuestion(4)
@@ -61,7 +62,7 @@ func (g *Game) play(rounds int) {
 				Content: g.scores,
 			}
 			g.sendMessageToAllPlayers(scoreUpdate)
-			if i < rounds-1 {
+			if i < g.NumberOfRounds-1 {
 				time.Sleep(1 * time.Second)
 			}
 		}
@@ -106,7 +107,6 @@ func (g *Game) sendQuestionToAllPlayers(q question, answer string){
 func (g *Game) playQuestion(question question, answer string){
 	g.sendQuestionToAllPlayers(question, answer)
 	g.AnswerSemaphore.Wait()
-	fmt.Println("Answers received")
 }
 
 func (g *Game) calculateLeaderbaord(){
