@@ -34,7 +34,10 @@ func(p *Player) readJSON(){
 			err := p.conn.ReadJSON(&v)
 			if err != nil {
 				p.readChan <- websocketMessage{msg:message{}, err:err}
-				fmt.Println("There was a WebSocket error:", err)
+				if websocket.IsUnexpectedCloseError(err,websocket.CloseGoingAway,websocket.CloseAbnormalClosure){
+					fmt.Println("There was a WebSocket error:", err)
+				}
+				fmt.Printf("Closed connection for: %s\n", p.Id)
 				return
 			}
 			p.readChan <- websocketMessage{msg:v, err:nil}

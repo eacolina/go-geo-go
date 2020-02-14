@@ -61,7 +61,6 @@ type gameOver struct{
 	Leaderboard map[string]int `json:"leaderboard"`
 }
 
-
 func fetchCapitals(p string) {
 	filePath,_ := filepath.Abs(p)
 	data, err := ioutil.ReadFile(filePath)
